@@ -26,8 +26,8 @@ Our paper is a follow-up study on [STEGO](https://arxiv.org/abs/2203.08414). The
 Clone this repo and install the Python dependencies.
 
 ```bash
-git clone https://github.com/merantix-momentum/STEGO
-cd STEGO
+git clone https://github.com/merantix-momentum/stego-studies
+cd stego-studies
 pip install -r requirements.txt
 ```
 
