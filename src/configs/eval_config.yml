@@ -1,20 +1,27 @@
-output_root: '../'
-pytorch_data_dir: '/datadrive/pytorch-data/'
-experiment_name: "cocostuff"
+# MXM EDIT BEGIN - Introduce wandb logging
+log_type: "wandb" # can be "wandb" or "tensorboard"
+models_dir: /data/models
+wandb_dotenv_path: wandb.env
+run_name: eval_run
+num_workers_crf: 14
+# MXM EDIT END - Description
+
+output_root: "../"
+pytorch_data_dir: "/data/datasets/"
+experiment_name: "eval"
 res: 320
 batch_size: 8
-num_workers: 24
-run_picie: True
+num_workers: 8
+run_picie: False
 run_crf: True
 run_prediction: True
 dark_mode: True
 use_ddp: False
 
 model_paths:
-  - "../saved_models/cocostuff27_vit_base_5.ckpt"
-  #- "../saved_models/cityscapes_vit_base_1.ckpt"
-  #- "../saved_models/potsdam_test.ckpt"
-
+  # - "${models_dir}/saved_models/cocostuff27_vit_base_5.ckpt"
+  # - "${models_dir}/saved_models/cityscapes_vit_base_1.ckpt"
+  - "${models_dir}/saved_models/potsdam_test.ckpt"
 hydra:
   run:
     dir: "."

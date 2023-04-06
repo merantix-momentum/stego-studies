@@ -19,6 +19,10 @@ from torchvision import models
 from torchvision import transforms as T
 from torch.utils.tensorboard.summary import hparams
 
+# MXM EDIT BEGIN - Imports
+import typing as t
+import wandb
+# MXM EDIT END
 
 def prep_for_plot(img, rescale=True, resize=None):
     if resize is not None:
@@ -32,13 +36,16 @@ def prep_for_plot(img, rescale=True, resize=None):
     return plot_img
 
 
-def add_plot(writer, name, step):
+def add_plot(log_type: str, writer, name, step):
     buf = io.BytesIO()
     plt.savefig(buf, format='jpeg', dpi=100)
     buf.seek(0)
     image = Image.open(buf)
     image = T.ToTensor()(image)
-    writer.add_image(name, image, step)
+    if log_type == "tensorboard":
+        writer.add_image(name, image, step)
+    elif log_type == "wandb":
+        wandb.log({name: [wandb.Image(image)]})
     plt.clf()
     plt.close()
 
@@ -201,19 +208,22 @@ def remove_axes(axes):
 
 
 class UnsupervisedMetrics(Metric):
-    def __init__(self, prefix: str, n_classes: int, extra_clusters: int, compute_hungarian: bool,
+    # MXM EDIT BEGIN - Add class_labels argument with human-readable labels for class-wise metric logging.
+    def __init__(self, prefix: str, class_labels: t.List[str], extra_clusters: int, compute_hungarian: bool,
                  dist_sync_on_step=True):
+    # MXM EDIT END
         # call `self.add_state`for every internal state that is needed for the metrics computations
         # dist_reduce_fx indicates the function that should be used to reduce
         # state from multiple processes
         super().__init__(dist_sync_on_step=dist_sync_on_step)
-
-        self.n_classes = n_classes
+        
+        self.class_labels = class_labels
+        self.n_classes = len(class_labels)
         self.extra_clusters = extra_clusters
         self.compute_hungarian = compute_hungarian
         self.prefix = prefix
         self.add_state("stats",
-                       default=torch.zeros(n_classes + self.extra_clusters, n_classes, dtype=torch.int64),
+                       default=torch.zeros(self.n_classes + self.extra_clusters, self.n_classes, dtype=torch.int64),
                        dist_reduce_fx="sum")
 
     def update(self, preds: torch.Tensor, target: torch.Tensor):
@@ -265,12 +275,26 @@ class UnsupervisedMetrics(Metric):
         fp = torch.sum(self.histogram, dim=0) - tp
         fn = torch.sum(self.histogram, dim=1) - tp
 
+        # MXM EDIT BEGIN - Additional metric logging. 
+        # Learning: STEGO code originally copied the PICIE code here https://github.com/janghyuncho/PiCIE/blob/195c33966e032b654534634a7204869d71495fbc/utils.py#L115
+        # We log per-class metrics ontop of the mean metrics that are already logged. Also, we log precision and recall which is not done in the original code.
         iou = tp / (tp + fp + fn)
-        prc = tp / (tp + fn)
-        opc = torch.sum(tp) / torch.sum(self.histogram)
+        prc = tp / (tp + fn)                            # PICIE says this is "precision_per_class (per class accuracy)", but shouldn't it be "per class recall"?
+        opc = torch.sum(tp) / torch.sum(self.histogram) # PICIE code says this is "overall_precision (pixel accuracy)"
+        ppr = tp / (tp + fp)                            # Addition by MXM: per class precision
 
         metric_dict = {self.prefix + "mIoU": iou[~torch.isnan(iou)].mean().item(),
                        self.prefix + "Accuracy": opc.item()}
+        
+        for i in range(self.n_classes):
+            metric_dict[f"{self.prefix}per_class_iou/{self.class_labels[i]}"] = iou[i].item()
+            metric_dict[f"{self.prefix}per_class_recall/{self.class_labels[i]}"] = prc[i].item()
+            metric_dict[f"{self.prefix}per_class_precision/{self.class_labels[i]}"] = ppr[i].item()
+    
+        metric_dict[f"{self.prefix}recall"] = prc[~torch.isnan(prc)].mean().item()
+        metric_dict[f"{self.prefix}precision"] = ppr[~torch.isnan(ppr)].mean().item()
+        # MXM EDIT END
+        
         return {k: 100 * v for k, v in metric_dict.items()}
 
 

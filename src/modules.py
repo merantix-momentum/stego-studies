@@ -3,7 +3,7 @@ import torch
 from utils import *
 import torch.nn.functional as F
 import dino.vision_transformer as vits
-
+from mxm_utils import only_dino
 
 class LambdaLayer(nn.Module):
     def __init__(self, lambd):
@@ -65,6 +65,12 @@ class DinoFeaturizer(nn.Module):
             self.n_feats = 384
         else:
             self.n_feats = 768
+        
+        # MXM EDIT BEGIN - We don't need Segmentation Head for the DINO-only baseline. 
+        if only_dino(cfg):
+            return
+        # MXM EDIT END
+        
         self.cluster1 = self.make_clusterer(self.n_feats)
         self.proj_type = cfg.projection_type
         if self.proj_type == "nonlinear":
@@ -104,7 +110,13 @@ class DinoFeaturizer(nn.Module):
 
             if return_class_feat:
                 return feat[:, :1, :].reshape(feat.shape[0], 1, 1, -1).permute(0, 3, 1, 2)
-
+        
+        # MXM EDIT BEGIN - Return image_feat (i.e. DINO feats) as STEGO "code" (i.e., Segmentation Head feats). 
+        # Duplication here ensures compatibility with other code. 
+        if only_dino(self.cfg):
+            return image_feat, image_feat 
+        # MXM EDIT END
+        
         if self.proj_type is not None:
             code = self.cluster1(self.dropout(image_feat))
             if self.proj_type == "nonlinear":

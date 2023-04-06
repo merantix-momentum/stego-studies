@@ -11,6 +11,9 @@ from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.utilities.seed import seed_everything
 from tqdm import tqdm
 
+# MXM EDIT BEGIN - Imports
+from mxm_utils import setup_wandb
+# MXM EDIT END
 
 def get_feats(model, loader):
     all_feats = []
@@ -23,6 +26,7 @@ def get_feats(model, loader):
 
 @hydra.main(config_path="configs", config_name="train_config.yml")
 def my_app(cfg: DictConfig) -> None:
+    setup_wandb(cfg)
     print(OmegaConf.to_yaml(cfg))
     pytorch_data_dir = cfg.pytorch_data_dir
     data_dir = join(cfg.output_root, "data")
@@ -46,7 +50,6 @@ def my_app(cfg: DictConfig) -> None:
 
     res = 224
     n_batches = 16
-
     if cfg.arch == "dino":
         from modules import DinoFeaturizer, LambdaLayer
         no_ap_model = torch.nn.Sequential(
@@ -63,6 +66,7 @@ def my_app(cfg: DictConfig) -> None:
             for dataset_name in dataset_names:
                 nice_dataset_name = cfg.dir_dataset_name if dataset_name == "directory" else dataset_name
 
+                print("Dataset: {}, Crop: {}, Image set: {}".format(nice_dataset_name, crop_type, image_set)) 
                 feature_cache_file = join(pytorch_data_dir, "nns", "nns_{}_{}_{}_{}_{}.npz".format(
                     cfg.model_type, nice_dataset_name, image_set, crop_type, res))
 
@@ -78,7 +82,7 @@ def my_app(cfg: DictConfig) -> None:
                         cfg=cfg,
                     )
 
-                    loader = DataLoader(dataset, 256, shuffle=False, num_workers=cfg.num_workers, pin_memory=False)
+                    loader = DataLoader(dataset, cfg.batch_size, shuffle=False, num_workers=cfg.num_workers, pin_memory=False)
 
                     with torch.no_grad():
                         normed_feats = get_feats(par_model, loader)
