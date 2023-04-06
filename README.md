@@ -142,7 +142,7 @@ do
 done
 ```
 
-After completing all experiments, you can generate Figures 3 and 4 from the paper and Figures 1 and 2 from the appendix with the below command. Depending on the' DATE' environment variable, you'll need to adapt some experiment names. Also, you'll need to change some WandB settings at the top of the file.
+After completing all experiments, you can generate Figures 3 and 4 from the paper and Figures 1 and 2 from the appendix with the below command. Depending on the `DATE` environment variable, you'll need to adapt some experiment names. Also, you'll need to change some WandB settings at the top of the file.
 
 ```bash
 python figures.py
