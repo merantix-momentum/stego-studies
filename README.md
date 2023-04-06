@@ -133,7 +133,7 @@ do
 done
 
 # POTSDAM
-for dimred in "PCA" "RP" "HNNE":
+for dimred in "PCA" "RP":
 do
     for dim in 70 384 192 100 96 48 24 12 6 3:
     do
