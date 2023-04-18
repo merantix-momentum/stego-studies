@@ -1,6 +1,6 @@
 # Uncovering the Inner Workings of STEGO for Safe Unsupervised Semantic Segmentation
 
-This repository contains the code accompanying the publication "Uncovering the Inner Workings of STEGO for Safe Unsupervised Semantic Segmentation".
+This repository contains the code accompanying the publication [Uncovering the Inner Workings of STEGO for Safe Unsupervised Semantic Segmentation](https://arxiv.org/abs/2304.07314), which was accepted at the [CVPR 2023 SAIAD Workshop](https://sites.google.com/view/saiad2023/).
 ## Citation
 
 ```
@@ -44,56 +44,57 @@ WANDB_PROJECT=example-project
 
 To generate the STEGO results, we followed the evaluation protocol from the original implementation. Simply run inference on the pre-trained models you downloaded.
 ```bash
-MODELS_DIR="/data/datasets/models/saved_models/"
-python eval_segmentation.py run_crf=True model_paths=[$MODELS_DIR"cocostuff27_vit_base_5.ckpt"] run_name="jan12_repro_coco_crf"
-python eval_segmentation.py run_crf=True model_paths=[$MODELS_DIR"cityscapes_vit_base_1.ckpt"] run_name="jan12_repro_city_crf"
-python eval_segmentation.py run_crf=True model_paths=[$MODELS_DIR"potsdam_test.ckpt"] run_name="jan12_repro_pots_crf"
+MODELS_DIR=/data/datasets/models/saved_models/
+python eval_segmentation.py run_crf=True model_paths=[${MODELS_DIR}cocostuff27_vit_base_5.ckpt] run_name=jan12_repro_coco_crf
+python eval_segmentation.py run_crf=True model_paths=[${MODELS_DIR}cityscapes_vit_base_1.ckpt] run_name=jan12_repro_city_crf
+python eval_segmentation.py run_crf=True model_paths=[${MODELS_DIR}potsdam_test.ckpt] run_name=jan12_repro_pots_crf
 ```
 
 To generate the DINO baseline results, you must train the linear layer on the DINO outputs and then evaluate the saved model. Note that we use the `max_steps`, `batch_size`, and `crop_type`, as found in the configuration of the pre-trained STEGO models, to stay comparable. For more information on this, see Table 1 in our paper. We implemented an `only_dino` flag, which removes the STEGO segmentation head from the architecture, and leaves everything else untouched.
 
 ```bash
-DATE=$(date +"%m-%d_%T")
-python train_segmentation.py run_name="final_only_dino_coco_"$DATE only_dino=True correspondence_weight=0 dataset_name="cocostuff27" model_type="vit_base" max_steps=7000 batch_size=32 crop_type="five"
-python train_segmentation.py run_name="final_only_dino_city_"$DATE only_dino=True correspondence_weight=0 dataset_name="cityscapes" model_type="vit_base" max_steps=7000 batch_size=32 crop_type="five"
-python train_segmentation.py run_name="final_only_dino_pots_"$DATE only_dino=True correspondence_weight=0 dataset_name="potsdam" model_type="vit_small" max_steps=5000 batch_size=16 crop_type=null
+DATE=$(date +%m-%d_%T)
+python train_segmentation.py run_name=final_only_dino_coco_${DATE} only_dino=True correspondence_weight=0 dataset_name=cocostuff27 model_type=vit_base max_steps=7000 batch_size=32 crop_type=five
+python train_segmentation.py run_name=final_only_dino_city_${DATE} only_dino=True correspondence_weight=0 dataset_name=cityscapes model_type=vit_base max_steps=7000 batch_size=32 crop_type=five
+python train_segmentation.py run_name=final_only_dino_pots_${DATE} only_dino=True correspondence_weight=0 dataset_name=potsdam model_type=vit_small max_steps=5000 batch_size=16 crop_type=null
 
-CHKPTS_ROOT="/data/output/checkpoints/"
-python eval_segmentation.py run_crf=True model_paths=[$CHKPTS_ROOT"final_only_dino_coco_01-23_14:55:24/epoch0-step6399.ckpt"] run_name="jan24_dino_coco_crf"
-python eval_segmentation.py run_crf=True model_paths=[$CHKPTS_ROOT"final_only_dino_city_01-23_14:55:24/epoch2-step1199.ckpt"] run_name="jan24_dino_city_crf"
-python eval_segmentation.py run_crf=True model_paths=[$CHKPTS_ROOT"final_only_dino_pots_01-24_15:37:40/1809-cluster_miou46.57.ckpt"] run_name="jan24_dino_pots_crf"
+CHKPTS_ROOT=/data/output/checkpoints/
+python eval_segmentation.py run_crf=True model_paths=[${CHKPTS_ROOT}final_only_dino_coco_01-23_14:55:24/epoch0-step6399.ckpt] run_name=jan24_dino_coco_crf
+python eval_segmentation.py run_crf=True model_paths=[${CHKPTS_ROOT}final_only_dino_city_01-23_14:55:24/epoch2-step1199.ckpt] run_name=jan24_dino_city_crf
+python eval_segmentation.py run_crf=True model_paths=[${CHKPTS_ROOT}final_only_dino_pots_01-24_15:37:40/1809-cluster_miou46.57.ckpt] run_name=jan24_dino_pots_crf
 ```
 ### 3. Reproducing Figures 3 and 4
 
 In section 4 of the paper, we benchmark the performance of STEGO and traditional dimensionality reduction techniques across various target dimensions. Figure 4 mainly shows the performances without applying CRF to paint an undistorted picture of the underlying feature projection method. Hence, we must first generate the non-CRF results for STEGO and the DINO baseline.
 
 ```bash
-python eval_segmentation.py run_crf=False model_paths=[$MODELS_DIR"cocostuff27_vit_base_5.ckpt"] run_name="jan12_repro_coco"
-python eval_segmentation.py run_crf=False model_paths=[$MODELS_DIR"cityscapes_vit_base_1.ckpt"] run_name="jan12_repro_city"
-python eval_segmentation.py run_crf=False model_paths=[$MODELS_DIR"potsdam_test.ckpt"] run_name="jan12_repro_pots"
-python eval_segmentation.py run_crf=False model_paths=[$CHKPTS_ROOT"final_only_dino_coco_01-23_14:55:24/epoch0-step6399.ckpt"] run_name="jan24_dino_coco"
-python eval_segmentation.py run_crf=False model_paths=[$CHKPTS_ROOT"final_only_dino_city_01-23_14:55:24/epoch2-step1199.ckpt"] run_name="jan24_dino_city"
-python eval_segmentation.py run_crf=False model_paths=[$CHKPTS_ROOT"final_only_dino_pots_01-24_15:37:40/1809-cluster_miou46.57.ckpt"] run_name="jan24_dino_pots"
+python eval_segmentation.py run_crf=False model_paths=[${MODELS_DIR}cocostuff27_vit_base_5.ckpt] run_name=jan12_repro_coco
+python eval_segmentation.py run_crf=False model_paths=[${MODELS_DIR}cityscapes_vit_base_1.ckpt] run_name=jan12_repro_city
+python eval_segmentation.py run_crf=False model_paths=[${MODELS_DIR}potsdam_test.ckpt] run_name=jan12_repro_pots
+python eval_segmentation.py run_crf=False model_paths=[${CHKPTS_ROOT}final_only_dino_coco_01-23_14:55:24/epoch0-step6399.ckpt] run_name=jan24_dino_coco
+python eval_segmentation.py run_crf=False model_paths=[${CHKPTS_ROOT}final_only_dino_city_01-23_14:55:24/epoch2-step1199.ckpt] run_name=jan24_dino_city
+python eval_segmentation.py run_crf=False model_paths=[${CHKPTS_ROOT}final_only_dino_pots_01-24_15:37:40/1809-cluster_miou46.57.ckpt] run_name=jan24_dino_pots
 ```
 
 Now we train the STEGO segmentation head and the other dimensionality reduction techniques for each dataset. For STEGO, we simply execute the provided `train_segmentation.py` script with different target dimensions to ensure maximum reproducibility.
 
 ```bash
 # COCOSTUFF
-for dim in 90 768 384 192 100 96 48 24 12 6 3:
+for dim in 90 768 384 192 100 96 48 24 12 6 3
 do
-    train_segmentation.py run_name="STEGO_repro_coco_dim"$dim"_date"$DATE only_dino=False dimred_type=null pointwise=True dim=$dim correspondence_weight=1.0 dataset_name="cocostuff27" model_type="vit_base" max_steps=7000 batch_size=32 crop_type=five neg_inter_weight=0.1538476246415498 pos_inter_weight=1 pos_intra_weight=0.1 neg_inter_shift=1 pos_inter_shift=0.2 pos_intra_shift=0.12
+    train_segmentation.py run_name=STEGO_repro_coco_dim${dim}_date${DATE} only_dino=False dimred_type=null pointwise=True dim=$dim correspondence_weight=1.0 dataset_name=cocostuff27 model_type=vit_base max_steps=7000 batch_size=32 crop_type=five neg_inter_weight=0.1538476246415498 pos_inter_weight=1 pos_intra_weight=0.1 neg_inter_shift=1 pos_inter_shift=0.2 pos_intra_shift=0.12
+done
 
 # CITYSCAPES
-for dim in 100 768 384 192 100 96 48 24 12 6 3:
+for dim in 100 768 384 192 100 96 48 24 12 6 3
 do
-    train_segmentation.py run_name="STEGO_repro_city_dim"$dim"_date"$DATE only_dino=False dimred_type=null pointwise=False dim=$dim correspondence_weight=1.0 dataset_name="cityscapes" model_type="vit_base" max_steps=7000 batch_size=32 crop_type="five" neg_inter_weight=0.9058762625226623 pos_inter_weight=0.577453483136995 pos_intra_weight=1 neg_inter_shift=0.31361241889448443 pos_inter_shift=0.1754346515479633 pos_intra_shift=0.45828472207
+    train_segmentation.py run_name=STEGO_repro_city_dim${dim}_date${DATE} only_dino=False dimred_type=null pointwise=False dim=$dim correspondence_weight=1.0 dataset_name=cityscapes model_type=vit_base max_steps=7000 batch_size=32 crop_type=five neg_inter_weight=0.9058762625226623 pos_inter_weight=0.577453483136995 pos_intra_weight=1 neg_inter_shift=0.31361241889448443 pos_inter_shift=0.1754346515479633 pos_intra_shift=0.45828472207
 done
 
 # POTSDAM
-for dim in 70 384 192 100 96 48 24 12 6 3:
+for dim in 70 384 192 100 96 48 24 12 6 3
 do
-    train_segmentation.py run_name="STEGO_repro_pots_dim"$dim"_date"$DATE only_dino=False dimred_type=null pointwise=True dim=$dim correspondence_weight=1.0 dataset_name="potsdam" model_type="vit_small" max_steps=5000 batch_size=16 crop_type=null neg_inter_weight=0.63 pos_inter_weight=0.25 pos_intra_weight=0.67 neg_inter_shift=0.76 pos_inter_shift=0.02 pos_intra_shift=0.08
+    train_segmentation.py run_name=STEGO_repro_pots_dim${dim}_date${DATE} only_dino=False dimred_type=null pointwise=True dim=$dim correspondence_weight=1.0 dataset_name=potsdam model_type=vit_small max_steps=5000 batch_size=16 crop_type=null neg_inter_weight=0.63 pos_inter_weight=0.25 pos_intra_weight=0.67 neg_inter_shift=0.76 pos_inter_shift=0.02 pos_intra_shift=0.08
 done
 ```
 
@@ -111,33 +112,33 @@ python mxm_precompute_dino_feats.py batch_size=64 # better system util with high
 
 We wrote a variant `mxm_train_segmentation.py` of the original `train_segmentation.py` script that uses the pre-computed DINO features instead of running the usual DINO forward pass. It was easier to copy the original `train_segmentation.py` and create a new `mxm_train_segmentation.py` with these more invasive additions instead of editing the original file and keeping it backward compatible. 
 
-Now you can run the remaining benchmarks on the other dimension reduction baselines. Once you start the script, the dimension reduction techniques (i.e., PCA, RP) will be automatically fitted on a subset of the training dataset. For HNNE, we need not only fit the method but also pre-compute its down-projected features because calculating them on the fly in the model's forward pass is prohibitively expensive. Hence, to reproduce the HNNE results from the appendix, run `python mxm_dimred.py dataset_name="cityscapes"`. Consequently, the training script will directly fetch the pre-computed, lower-dimensional HNNE features.
+Now you can run the remaining benchmarks on the other dimension reduction baselines. Once you start the script, the dimension reduction techniques (i.e., PCA, RP) will be automatically fitted on a subset of the training dataset. For HNNE, we need not only fit the method but also pre-compute its down-projected features because calculating them on the fly in the model's forward pass is prohibitively expensive. Hence, to reproduce the HNNE results from the appendix, run `python mxm_dimred.py dataset_name=cityscapes`. Consequently, the training script will directly fetch the pre-computed, lower-dimensional HNNE features.
 
 ```bash
 # COCOSTUFF
-for dimred in "PCA" "RP":
+for dimred in PCA RP
 do
-    for dim in 90 768 384 192 100 96 48 24 12 6 3:
+    for dim in 90 768 384 192 100 96 48 24 12 6 3
     do
-        python mxm_train_segmentation.py run_name=$dimred"_coco_dim"$dim"_date"$DATE only_dino=True dimred_type=$dimred dim=$dim correspondence_weight=0.0 dataset_name="cocostuff27" model_type="vit_base" max_steps=7000 batch_size=32 crop_type="five"
+        python mxm_train_segmentation.py run_name=${dimred}_coco_dim${dim}_date${DATE} only_dino=True dimred_type=${dimred} dim=$dim correspondence_weight=0.0 dataset_name=cocostuff27 model_type=vit_base max_steps=7000 batch_size=32 crop_type=five
     done
 done
     
 # CITYSCAPES
-for dimred in "PCA" "RP" "HNNE":
+for dimred in PCA RP HNNE
 do
-    for dim in 100 768 384 192 100 96 48 24 12 6 3:
+    for dim in 100 768 384 192 100 96 48 24 12 6 3
     do
-        python mxm_train_segmentation.py run_name=$dimred"_city_dim"$dim"_date"$DATE only_dino=True dimred_type=$dimred dim=$dim correspondence_weight=0.0 dataset_name="cityscapes" model_type="vit_base" max_steps=7000 batch_size=32 crop_type="five" 
+        python mxm_train_segmentation.py run_name=${dimred}_city_dim${dim}_date${DATE} only_dino=True dimred_type=${dimred} dim=$dim correspondence_weight=0.0 dataset_name=cityscapes model_type=vit_base max_steps=7000 batch_size=32 crop_type=five 
     done
 done
 
 # POTSDAM
-for dimred in "PCA" "RP":
+for dimred in PCA RP
 do
-    for dim in 70 384 192 100 96 48 24 12 6 3:
+    for dim in 70 384 192 100 96 48 24 12 6 3
     do
-        python mxm_train_segmentation.py run_name=$dimred"_pots_dim"$dim"_date"$DATE only_dino=True dimred_type=$dimred dim=$dim correspondence_weight=0.0 dataset_name="potsdam" model_type="vit_small" max_steps=5000 batch_size=16 crop_type=null
+        python mxm_train_segmentation.py run_name=${dimred}_pots_dim${dim}_date${DATE} only_dino=True dimred_type=${dimred} dim=$dim correspondence_weight=0.0 dataset_name=potsdam model_type=vit_small max_steps=5000 batch_size=16 crop_type=null
     done
 done
 ```
