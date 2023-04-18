@@ -137,7 +137,7 @@ def my_app(cfg: DictConfig) -> None:
     # crop_types = ["five","random"]
     # crop_ratios = [.5, .7]
 
-    dataset_names = ["cityscapes"]
+    dataset_names = ["cityscapes", "cocostuff27", "potsdam"]
     img_sets = ["train", "val"]
     crop_types = ["five"]
     crop_ratios = [.5]
@@ -146,6 +146,7 @@ def my_app(cfg: DictConfig) -> None:
         for crop_type in crop_types:
             for dataset_name in dataset_names:
                 for img_set in img_sets:
+                    print("Computing {} {} {} {} ...".format(dataset_name, img_set, crop_type, crop_ratio)) 
                     dataset = RandomCropComputer(cfg, dataset_name, img_set, crop_type, crop_ratio)
                     loader = DataLoader(dataset, 1, shuffle=False, num_workers=cfg.num_workers, collate_fn=lambda l: l)
                     for _ in tqdm(loader):

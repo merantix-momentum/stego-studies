@@ -1,21 +1,29 @@
-from utils import *
-from modules import *
-from data import *
-from torch.utils.data import DataLoader
-import torch.nn.functional as F
+import sys
 from datetime import datetime
+
 import hydra
-from omegaconf import DictConfig, OmegaConf
 import pytorch_lightning as pl
+import seaborn as sns
+import torch.multiprocessing
+import torch.nn.functional as F
+from data import *
+from modules import *
+from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
+from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.utilities.seed import seed_everything
-import torch.multiprocessing
-import seaborn as sns
-from pytorch_lightning.callbacks import ModelCheckpoint
-import sys
+from torch.utils.data import DataLoader
+from utils import *
 
 torch.multiprocessing.set_sharing_strategy('file_system')
+
+# MXM EDIT BEGIN - Imports
+import wandb
+from mxm_utils import dimred_in_forward_pass, do_dimred, only_dino, setup_wandb
+from pytorch_lightning.loggers import WandbLogger
+
+# MXM EDIT END
 
 def get_class_labels(dataset_name):
     if dataset_name.startswith("cityscapes"):
@@ -70,23 +78,56 @@ class LitUnsupervisedSegmenter(pl.LightningModule):
         else:
             raise ValueError("Unknown arch {}".format(cfg.arch))
 
-        self.train_cluster_probe = ClusterLookup(dim, n_classes)
+        # MXM EDIT BEGIN - Adjust input dimension for cluster lookup and linear probe to number of output ViT channels of the "only_dino" baseline
+        # if dino baseline, unreduced dimension "n_feats", if dimred (including STEGO) target dimension is dim
+        target_dim = self.net.n_feats if only_dino(cfg) and not do_dimred(cfg) else dim
+        self.cluster_probe = ClusterLookup(target_dim, n_classes + cfg.extra_clusters)
+        self.linear_probe = nn.Conv2d(target_dim, n_classes, (1, 1))
+        # MXM EDIT END
+        
+        # MXM EDIT BEGIN - For the DINO only baseline, we don't need the STEGO loss calculation and can avoid forward pass of "KNN" and "Random" images
+        if only_dino(cfg) and cfg.correspondence_weight != 0:
+            raise ValueError("Training DINO baseline expects correspondence_weight=0.")
+        # MXM EDIT END
+        
+        # MXM EDIT BEGIN - Instead of the STEGO clustering layer, we use a simple dimensionality reduction layer.
+        if dimred_in_forward_pass(cfg):
+            from mxm_dimred import get_dimred
+            self.dimred = get_dimred(cfg)
+        # MXM EDIT END
+        
+        # MXM EDIT BEGIN - Without changing original implementation too much, we can only safely plot batch_size of validation images.
+        if "val_batch_size" in cfg and cfg.val_batch_size < cfg.n_images:
+            print(f"Reducing number of validation images {cfg.n_images} to batch size {cfg.val_batch_size}.")
+            cfg.n_images = cfg.val_batch_size
+        # MXM EDIT END
+        
+        # MXM EDIT BEGIN - Decoder is only trained when rec_weight > 0, hence we also check for this here to avoid loading unnecessary weights into GPU memory
+        if self.cfg.rec_weight > 0:
+            self.decoder = nn.Conv2d(dim, self.net.n_feats, (1, 1))
+        # MXM EDIT END
 
-        self.cluster_probe = ClusterLookup(dim, n_classes + cfg.extra_clusters)
-        self.linear_probe = nn.Conv2d(dim, n_classes, (1, 1))
-
-        self.decoder = nn.Conv2d(dim, self.net.n_feats, (1, 1))
-
+        # MXM EDIT BEGIN - Pass human-readable class labels into metrics calculator to later log class-specific metrics. 
+        # Also note that "test/cluster" actually refers to validation results not test! This is the original implementation and we won't change it here.
+        class_labels = get_class_labels(cfg.dataset_name)
         self.cluster_metrics = UnsupervisedMetrics(
-            "test/cluster/", n_classes, cfg.extra_clusters, True)
+            "test/cluster/", class_labels, cfg.extra_clusters, True)
         self.linear_metrics = UnsupervisedMetrics(
-            "test/linear/", n_classes, 0, False)
-
+            "test/linear/", class_labels, 0, False)
+        # MXM EDIT END
+        
+        # MXM EDIT BEGIN - Since we want to log the training cluster metrics to more clearly idenfity overfitting, we add "train_cluster_metrics" and "train_linear_metrics".
+        self.train_cluster_metrics = UnsupervisedMetrics(
+            "train/cluster/", class_labels, cfg.extra_clusters, True)
+        self.train_linear_metrics = UnsupervisedMetrics(
+            "train/linear/", class_labels, 0, False)
+        # MXM EDIT END
+        
         self.test_cluster_metrics = UnsupervisedMetrics(
-            "final/cluster/", n_classes, cfg.extra_clusters, True)
+            "final/cluster/", class_labels, cfg.extra_clusters, True)
         self.test_linear_metrics = UnsupervisedMetrics(
-            "final/linear/", n_classes, 0, False)
-
+            "final/linear/", class_labels, 0, False)
+                
         self.linear_probe_loss_fn = torch.nn.CrossEntropyLoss()
         self.crf_loss_fn = ContrastiveCRFLoss(
             cfg.crf_samples, cfg.alpha, cfg.beta, cfg.gamma, cfg.w1, cfg.w2, cfg.shift)
@@ -128,6 +169,11 @@ class LitUnsupervisedSegmenter(pl.LightningModule):
             label_pos = batch["label_pos"]
 
         feats, code = self.net(img)
+        # MXM EDIT BEGIN - Dimensionality reduction if requested.
+        if dimred_in_forward_pass(self.cfg):
+            code = self.dimred(code)
+        # MXM EDIT END
+        
         if self.cfg.correspondence_weight > 0:
             feats_pos, code_pos = self.net(img_pos)
         log_args = dict(sync_dist=False, rank_zero_only=True)
@@ -136,8 +182,11 @@ class LitUnsupervisedSegmenter(pl.LightningModule):
             signal = one_hot_feats(label + 1, self.n_classes + 1)
             signal_pos = one_hot_feats(label_pos + 1, self.n_classes + 1)
         else:
-            signal = feats
-            signal_pos = feats_pos
+            # MXM EDIT BEGIN - Avoid "'feats_pos' referenced before assignment" error when correspondence_weight=0.
+            if self.cfg.correspondence_weight > 0:
+                signal = feats
+                signal_pos = feats_pos
+            # MXM EDIT END
 
         loss = 0
 
@@ -163,9 +212,14 @@ class LitUnsupervisedSegmenter(pl.LightningModule):
             )
 
             if should_log_hist:
-                self.logger.experiment.add_histogram("intra_cd", pos_intra_cd, self.global_step)
-                self.logger.experiment.add_histogram("inter_cd", pos_inter_cd, self.global_step)
-                self.logger.experiment.add_histogram("neg_cd", neg_inter_cd, self.global_step)
+                if self.cfg.log_type == "wandb":
+                    wandb.log({"histograms/intra_cd": wandb.Histogram(pos_intra_cd.detach().cpu())}, step=self.global_step)
+                    wandb.log({"histograms/inter_cd": wandb.Histogram(pos_inter_cd.detach().cpu())}, step=self.global_step)
+                    wandb.log({"histograms/neg_cd": wandb.Histogram(neg_inter_cd.detach().cpu())}, step=self.global_step)
+                elif self.cfg.log_type == "tensorboard":
+                    self.logger.experiment.add_histogram("intra_cd", pos_intra_cd, self.global_step)
+                    self.logger.experiment.add_histogram("inter_cd", pos_inter_cd, self.global_step)
+                    self.logger.experiment.add_histogram("neg_cd", neg_inter_cd, self.global_step)
             neg_inter_loss = neg_inter_loss.mean()
             pos_intra_loss = pos_intra_loss.mean()
             pos_inter_loss = pos_inter_loss.mean()
@@ -224,6 +278,12 @@ class LitUnsupervisedSegmenter(pl.LightningModule):
         self.log('loss/cluster', cluster_loss, **log_args)
         self.log('loss/total', loss, **log_args)
 
+        # MXM EDIT BEGIN - Log cluster and linear metrics for training set. We also have to bilinearly upsample the cluster probs to match the label size. 
+        self.train_linear_metrics.update(linear_logits.argmax(1), label)
+        cluster_probs = F.interpolate(cluster_probs, label.shape[-2:], mode='bilinear', align_corners=False)
+        self.train_cluster_metrics.update(cluster_probs.argmax(1), label)
+        # MXM EDIT END
+        
         self.manual_backward(loss)
         net_optim.step()
         cluster_probe_optim.step()
@@ -236,21 +296,38 @@ class LitUnsupervisedSegmenter(pl.LightningModule):
             self.trainer.optimizers[1] = torch.optim.Adam(list(self.linear_probe.parameters()), lr=5e-3)
             self.trainer.optimizers[2] = torch.optim.Adam(list(self.cluster_probe.parameters()), lr=5e-3)
 
-        if self.global_step % 2000 == 0 and self.global_step > 0:
+        if self.cfg.log_type == "tensorboard" and self.global_step % 2000 == 0 and self.global_step > 0:
             print("RESETTING TFEVENT FILE")
             # Make a new tfevent file
             self.logger.experiment.close()
             self.logger.experiment._get_file_writer()
 
+        # MXM EDIT BEGIN - Log metrics for training set. This follows the same logic in as in on_validation_epoch_end, and copies some code, to avoid having to change the original code.
+        if self.global_step % self.cfg.train_metrics_log_interval == 0:
+            metrics = {
+                **self.train_linear_metrics.compute(),
+                **self.train_cluster_metrics.compute(),
+            }
+            self.log_dict(metrics)
+            self.train_linear_metrics.reset()
+            self.train_cluster_metrics.reset()
+        # MXM EDIT END
         return loss
-
+    
     def on_train_start(self):
         tb_metrics = {
             **self.linear_metrics.compute(),
-            **self.cluster_metrics.compute()
+            **self.cluster_metrics.compute(),
+            # MXM EDIT BEGIN - Not sure why STEGO computes metrics here already, but let's do the same for our added train metrics.
+            **self.train_linear_metrics.compute(),
+            **self.train_cluster_metrics.compute(),
+            # MXM EDIT END
         }
-        self.logger.log_hyperparams(self.cfg, tb_metrics)
-
+        if self.cfg.log_type == "tensorboard": 
+            self.logger.log_hyperparams(self.cfg, tb_metrics)
+        else:
+            self.logger.log_hyperparams(self.cfg)
+            
     def validation_step(self, batch, batch_idx):
         img = batch["img"]
         label = batch["label"]
@@ -258,6 +335,10 @@ class LitUnsupervisedSegmenter(pl.LightningModule):
 
         with torch.no_grad():
             feats, code = self.net(img)
+            # MXM EDIT BEGIN - Dimensionality reduction if requested.
+            if dimred_in_forward_pass(self.cfg):
+                code = self.dimred(code)
+            # MXM EDIT END
             code = F.interpolate(code, label.shape[-2:], mode='bilinear', align_corners=False)
 
             linear_preds = self.linear_probe(code)
@@ -268,11 +349,18 @@ class LitUnsupervisedSegmenter(pl.LightningModule):
             cluster_preds = cluster_preds.argmax(1)
             self.cluster_metrics.update(cluster_preds, label)
 
-            return {
-                'img': img[:self.cfg.n_images].detach().cpu(),
-                'linear_preds': linear_preds[:self.cfg.n_images].detach().cpu(),
-                "cluster_preds": cluster_preds[:self.cfg.n_images].detach().cpu(),
-                "label": label[:self.cfg.n_images].detach().cpu()}
+            # MXM EDIT BEGIN - Only return the validation results from the first batch. The original implementation 
+            # returns the validation results every epoch here. Since PyTorch Lightning saves all intermediate validation
+            # results this OOMs our system as the intermediate results are rather large images. Only returning the results
+            # from the first batch here will only influence the visualization in validation_epoch_end, but not the final 
+            # metrics as their data is stored in self.linear_metrics and self.cluster_metrics, respectively.
+            if batch_idx == 0:
+                return {
+                    'img': img[:self.cfg.n_images].detach().cpu(),
+                    'linear_preds': linear_preds[:self.cfg.n_images].detach().cpu(),
+                    "cluster_preds": cluster_preds[:self.cfg.n_images].detach().cpu(),
+                    "label": label[:self.cfg.n_images].detach().cpu()}
+            # MXM EDIT END
 
     def validation_epoch_end(self, outputs) -> None:
         super().validation_epoch_end(outputs)
@@ -299,7 +387,7 @@ class LitUnsupervisedSegmenter(pl.LightningModule):
                 ax[3, 0].set_ylabel("Cluster Probe", fontsize=16)
                 remove_axes(ax)
                 plt.tight_layout()
-                add_plot(self.logger.experiment, "plot_labels", self.global_step)
+                add_plot(self.cfg.log_type, self.logger.experiment, "plot_labels", self.global_step)
 
                 if self.cfg.has_labels:
                     fig = plt.figure(figsize=(13, 10))
@@ -327,7 +415,7 @@ class LitUnsupervisedSegmenter(pl.LightningModule):
                     ax.vlines(np.arange(0, len(names) + 1), color=[.5, .5, .5], *ax.get_xlim())
                     ax.hlines(np.arange(0, len(names) + 1), color=[.5, .5, .5], *ax.get_ylim())
                     plt.tight_layout()
-                    add_plot(self.logger.experiment, "conf_matrix", self.global_step)
+                    add_plot(self.cfg.log_type, self.logger.experiment, "conf_matrix", self.global_step)
 
                     all_bars = torch.cat([
                         self.cluster_metrics.histogram.sum(0).cpu(),
@@ -356,7 +444,7 @@ class LitUnsupervisedSegmenter(pl.LightningModule):
                     ax[1].tick_params(axis='x', labelrotation=90)
 
                     plt.tight_layout()
-                    add_plot(self.logger.experiment, "label frequency", self.global_step)
+                    add_plot(self.cfg.log_type, self.logger.experiment, "label frequency", self.global_step)
 
             if self.global_step > 2:
                 self.log_dict(tb_metrics)
@@ -385,6 +473,7 @@ class LitUnsupervisedSegmenter(pl.LightningModule):
 
 @hydra.main(config_path="configs", config_name="train_config.yml")
 def my_app(cfg: DictConfig) -> None:
+    setup_wandb(cfg)
     OmegaConf.set_struct(cfg, False)
     print(OmegaConf.to_yaml(cfg))
     pytorch_data_dir = cfg.pytorch_data_dir
@@ -449,50 +538,53 @@ def my_app(cfg: DictConfig) -> None:
         cfg=cfg,
     )
 
-    #val_dataset = MaterializedDataset(val_dataset)
+    # MXM EDIT BEGIN - Use new val_batch_size key from config here. Validation batch size should be lower than training batch size, 
+    # since validation images are 320*320 by default and take up more memory than the 244*244 training images.
     train_loader = DataLoader(train_dataset, cfg.batch_size, shuffle=True, num_workers=cfg.num_workers, pin_memory=True)
-
-    if cfg.submitting_to_aml:
-        val_batch_size = 16
-    else:
-        val_batch_size = cfg.batch_size
-
-    val_loader = DataLoader(val_dataset, val_batch_size, shuffle=False, num_workers=cfg.num_workers, pin_memory=True)
+    val_loader = DataLoader(val_dataset, cfg.val_batch_size, shuffle=False, num_workers=cfg.num_workers, pin_memory=True)
+    # MXM EDIT END
 
     model = LitUnsupervisedSegmenter(train_dataset.n_classes, cfg)
 
-    tb_logger = TensorBoardLogger(
-        join(log_dir, name),
-        default_hp_metric=False
-    )
-
-    if cfg.submitting_to_aml:
-        gpu_args = dict(gpus=1, val_check_interval=250)
-
-        if gpu_args["val_check_interval"] > len(train_loader):
-            gpu_args.pop("val_check_interval")
-
-    else:
-        gpu_args = dict(gpus=-1, accelerator='ddp', val_check_interval=cfg.val_freq)
-        # gpu_args = dict(gpus=1, accelerator='ddp', val_check_interval=cfg.val_freq)
-
-        if gpu_args["val_check_interval"] > len(train_loader) // 4:
-            gpu_args.pop("val_check_interval")
+    if cfg.log_type == "tensorboard":
+        logger = TensorBoardLogger(
+            join(log_dir, name),
+            default_hp_metric=False
+        )
+    elif cfg.log_type == "wandb":
+        logger = WandbLogger(log_model=cfg.log_model)
+        if cfg.wandb_watch:
+            logger.watch(model, log="all", log_freq=20)
+    ckpt_pth = join(checkpoint_dir, cfg.run_name)
+    os.makedirs(ckpt_pth, exist_ok=True)
 
     trainer = Trainer(
         log_every_n_steps=cfg.scalar_log_freq,
-        logger=tb_logger,
+        logger=logger,
         max_steps=cfg.max_steps,
+        # MXM EDIT BEGIN - Custom arguments, replacing the "gpu_args" dictionary, which was modifying
+        # val_check_interval depending on training dataset size. This did not make sense for us, because we're
+        # training on one GPU.
+        gpus=-1,
+        val_check_interval=cfg.val_freq,       
+        # MXM EDIT END
         callbacks=[
             ModelCheckpoint(
-                dirpath=join(checkpoint_dir, name),
-                every_n_train_steps=400,
+                dirpath=None if cfg.log_type == "wandb" else ckpt_pth, # log model to wandb instead if using wandb
+                # MXM EDIT BEGIN - Comment out every_n_train_steps=400 because val_check_interval=100 by default, which 
+                # means that not every validation step is taken into account in the model checkpointing but only every 4th.
+                # every_n_train_steps=400,
+                # MXM EDIT END
                 save_top_k=2,
                 monitor="test/cluster/mIoU",
                 mode="max",
+                # MXM EDIT BEGIN - Adding a custom filename to the checkpoint, which includes the cluster mIoU.
+                save_last=True,
+                filename="step{step}-cluster_miou{test/cluster/mIoU:.2f}",
+                auto_insert_metric_name=False,
+                # MXM EDIT END
             )
         ],
-        **gpu_args
     )
     trainer.fit(model, train_loader, val_loader)
 

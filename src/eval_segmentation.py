@@ -11,6 +11,9 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from train_segmentation import LitUnsupervisedSegmenter, prep_for_plot, get_class_labels
 
+import wandb
+import numpy as np
+from mxm_utils import setup_wandb, safe_wandb_log
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 def plot_cm(histogram, label_cmap, cfg):
@@ -56,6 +59,10 @@ def batched_crf(pool, img_tensor, prob_tensor):
 
 @hydra.main(config_path="configs", config_name="eval_config.yml")
 def my_app(cfg: DictConfig) -> None:
+    # MXM EDIT BEGIN - Setup wandb and sharing strategy to "spawn", otherwise got deadlock
+    setup_wandb(cfg)
+    torch.multiprocessing.set_start_method("spawn")
+    # MXM EDIT END
     pytorch_data_dir = cfg.pytorch_data_dir
     result_dir = "../results/predictions/{}".format(cfg.experiment_name)
     os.makedirs(join(result_dir, "img"), exist_ok=True)
@@ -64,9 +71,12 @@ def my_app(cfg: DictConfig) -> None:
     os.makedirs(join(result_dir, "picie"), exist_ok=True)
 
     for model_path in cfg.model_paths:
-        model = LitUnsupervisedSegmenter.load_from_checkpoint(model_path)
+        # MXM EDIT BEGIN - We deleted ['train_cluster_probe.clusters', 'decoder.weight', 'decoder.bias'] from 
+        # LitUnsupervisedSegmenter because they were unused and were taking up unneccessary GPU memory. Hence, 
+        # we need to pass strict=False here for state dict loading of pre-trained STEGO models to work.
+        model = LitUnsupervisedSegmenter.load_from_checkpoint(model_path, strict=False)
+        # MXM EDIT END
         print(OmegaConf.to_yaml(model.cfg))
-
         run_picie = cfg.run_picie and model.cfg.dataset_name == "cocostuff27"
         if run_picie:
             picie_state = torch.load("../saved_models/picie_and_probes.pth")
@@ -99,28 +109,36 @@ def my_app(cfg: DictConfig) -> None:
             par_model = model.net
             if run_picie:
                 par_picie = picie
-
+        
+        # MXM EDIT BEGIN - Also plot non-cherry picked images
+        num_imgs = 50
+        default_indices = list(range(num_imgs))
         if model.cfg.dataset_name == "cocostuff27":
             # all_good_images = range(10)
             # all_good_images = range(250)
             # all_good_images = [61, 60, 49, 44, 13, 70] #Failure cases
-            all_good_images = [19, 54, 67, 66, 65, 75, 77, 76, 124]  # Main figure
+            all_good_images = [19, 54, 67, 66, 65, 75, 77, 76, 124] + default_indices # Main figure
         elif model.cfg.dataset_name == "cityscapes":
             # all_good_images = range(80)
             # all_good_images = [ 5, 20, 56]
-            all_good_images = [11, 32, 43, 52]
+            all_good_images = [11, 32, 43, 52] + default_indices
         else:
-            raise ValueError("Unknown Dataset {}".format(model.cfg.dataset_name))
+            print(f"Unknown Dataset {model.cfg.dataset_name} plotting {num_imgs} first images.")
+            all_good_images = default_indices
+        # MXM EDIT END
+
         batch_nums = torch.tensor([n // (cfg.batch_size * 2) for n in all_good_images])
         batch_offsets = torch.tensor([n % (cfg.batch_size * 2) for n in all_good_images])
 
         saved_data = defaultdict(list)
-        with Pool(cfg.num_workers + 5) as pool:
+        with Pool(cfg.num_workers_crf) as pool:
             for i, batch in enumerate(tqdm(test_loader)):
                 with torch.no_grad():
                     img = batch["img"].cuda()
                     label = batch["label"].cuda()
-
+                    
+                    # MXM COMMENT - STEGO computes two forward passes here on a flipped image. In a short study on Cityscapes
+                    # we found that this improves results by a negligible amount (approx 0.05 across all metrics).
                     feats, code1 = par_model(img)
                     feats, code2 = par_model(img.flip(dims=[3]))
                     code = (code1 + code2.flip(dims=[3])) / 2
@@ -163,9 +181,10 @@ def my_app(cfg: DictConfig) -> None:
         print("")
         print(model_path)
         print(tb_metrics)
+        safe_wandb_log(tb_metrics)
 
         if cfg.run_prediction:
-            n_rows = 3
+            n_rows = 4
         else:
             n_rows = 2
 
@@ -192,27 +211,34 @@ def my_app(cfg: DictConfig) -> None:
                         .astype(np.uint8)
                     Image.fromarray(plot_cluster).save(join(join(result_dir, "cluster", str(img_num) + ".png")))
                     ax[2, i].imshow(plot_cluster)
+                    # MXM EDIT BEGIN - Also plot linear probe predictions
+                    plot_linear = model.label_cmap[saved_data["linear_preds"][img_num]]
+                    ax[3, i].imshow(plot_linear)
+                    # MXM EDIT END
                 if run_picie:
                     picie_img = model.label_cmap[saved_data["picie_preds"][img_num]].astype(np.uint8)
-                    ax[3, i].imshow(picie_img)
+                    ax[4, i].imshow(picie_img)
                     Image.fromarray(picie_img).save(join(join(result_dir, "picie", str(img_num) + ".png")))
 
             ax[0, 0].set_ylabel("Image", fontsize=26)
             ax[1, 0].set_ylabel("Label", fontsize=26)
             if cfg.run_prediction:
-                ax[2, 0].set_ylabel("STEGO\n(Ours)", fontsize=26)
+                ax[2, 0].set_ylabel("STEGO\nCluster + CRF", fontsize=26)
+                ax[3, 0].set_ylabel("STEGO\nLinear + CRF", fontsize=26)
             if run_picie:
-                ax[3, 0].set_ylabel("PiCIE\n(Baseline)", fontsize=26)
+                ax[4, 0].set_ylabel("PiCIE\n(Baseline)", fontsize=26)
 
             remove_axes(ax)
             plt.tight_layout()
+            safe_wandb_log({"preds_good_imgs": plt})
             plt.show()
             plt.clf()
-
+            
         plot_cm(model.test_cluster_metrics.histogram, model.label_cmap, model.cfg)
+        safe_wandb_log({"cm_histogram": wandb.Image(plt)})
         plt.show()
         plt.clf()
-
+        print("Done! Have a nice day!")
 
 if __name__ == "__main__":
     prep_args()

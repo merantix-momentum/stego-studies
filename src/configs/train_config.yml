@@ -1,8 +1,46 @@
-output_root: '../'
-pytorch_data_dir: '/datadrive/pytorch-data/'
-experiment_name: "exp1"
-log_dir: "cocostuff27"
-azureml_logging: True
+# MXM EDIT BEGIN - Introduce wandb logging, option to train with only DINO, and dimension reduction methods.
+log_type: "wandb" # can be "wandb" or "tensorboard"
+wandb_dotenv_path: wandb.env
+log_model: True
+wandb_watch: True
+run_name: train_run
+only_dino: False
+val_batch_size: 8 # 16 doesn't fit on GPU since val images are larger than train images
+dimred_type: # can be any of ["PCA", "UMAP", "RP", "HNNE", null]
+train_metrics_log_interval: 100
+train_shuffle_key_buffer: 1000 # only used when fetching pre-computed features. We usually have way less than 1000 shards, since each shard has 500 samples. So here we randomly sample from all shards
+train_shuffle_item_buffer: 500
+log_train_metrics: False # whether mIoU etc are also logged for training set. This allowed us to analyze overfitting, but slows training down, so make it optional here.
+val_res: 320 # this was hardcoded in train_segmentation.py for STEGO
+root_feat_store: ${pytorch_data_dir} # path where your precomputed DINO features are saved, subdirectories will be automatically added
+root_dimred_store: ${pytorch_data_dir} # path where your fitted dimension reduction is saved, subdirectories will be automatically added
+pca_conf:
+  n_components: ${dim}
+  num_images_limit: 5000 # 5k ViT-B images (~4Mio tokens) results in ~60GB RAM Usage.
+  mem_limit_percent:
+random_projection_conf:
+  n_components: ${dim}
+  num_images_limit: 5000
+  mem_limit_percent:
+hnne_conf:
+  n_components: ${dim}
+  num_images_limit: 5000
+  num_tokens_limit: 1000000 # 2M maxes out n1-standard-16 machine.
+  mem_limit_percent:
+umap_conf:
+  num_images_limit: 5000 # 4 mio tokens to draw from
+  num_tokens_limit: 10000
+  n_neighbors: 15 # 30 is suggested in UMAP's documentation for clustering https://umap-learn.readthedocs.io/en/latest/clustering.html
+  n_components: ${dim}
+  min_dist: 0.1 # 0 is suggested in UMAP's documentation for clustering https://umap-learn.readthedocs.io/en/latest/clustering.html
+  metric: "cosine"
+# MXM EDIT END
+
+output_root: "/workspace/output"
+pytorch_data_dir: "/data/datasets/"
+experiment_name: "run"
+log_dir: ${dataset_name}
+azureml_logging: False
 submitting_to_aml: False
 
 # Loader params
