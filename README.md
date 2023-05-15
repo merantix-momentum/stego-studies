@@ -1,6 +1,9 @@
 # Uncovering the Inner Workings of STEGO for Safe Unsupervised Semantic Segmentation
 
 This repository contains the code accompanying the publication [Uncovering the Inner Workings of STEGO for Safe Unsupervised Semantic Segmentation](https://arxiv.org/abs/2304.07314), which was accepted at the [CVPR 2023 SAIAD Workshop](https://sites.google.com/view/saiad2023/).
+
+<img src="results/figures/all_datasets_miou.jpg">
+
 ## Citation
 
 ```
