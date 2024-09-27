@@ -20,7 +20,7 @@ torchvision==0.8.2
 scikit-image
 opencv-python
 pytorch-lightning
-protobuf==3.20
+protobuf==3.20.2
 python-dotenv
 wandb
 plotly
